@@ -249,10 +249,15 @@ run_push_force() {
     override_count=$(count_local_keys "$config_name")
 
     if [[ "$override_count" -eq 0 ]]; then
-        doppler secrets upload \
+        local err_file="$TMPDIR_SYNC/doppler_upload_err"
+        if ! doppler secrets upload \
             --project "$doppler_project" \
             --config "$doppler_config" \
-            "${REPO_ROOT}/${env_file}" 2>/dev/null
+            "${REPO_ROOT}/${env_file}" 2>"$err_file"; then
+            echo -e "${RED}Error: Doppler upload failed${NC}"
+            [[ -s "$err_file" ]] && cat "$err_file" >&2
+            return 1
+        fi
         echo -e "${GREEN}✓ ${env_file} force-pushed to Doppler (full replace)${NC}"
         return
     fi
@@ -272,10 +277,15 @@ run_push_force() {
         fi
     done < "${REPO_ROOT}/${env_file}"
 
-    doppler secrets upload \
+    local err_file="$TMPDIR_SYNC/doppler_upload_err"
+    if ! doppler secrets upload \
         --project "$doppler_project" \
         --config "$doppler_config" \
-        "$upload_file" 2>/dev/null
+        "$upload_file" 2>"$err_file"; then
+        echo -e "${RED}Error: Doppler upload failed${NC}"
+        [[ -s "$err_file" ]] && cat "$err_file" >&2
+        return 1
+    fi
 
     echo -e "${GREEN}✓ ${env_file} force-pushed to Doppler (${override_count} local overrides stored as placeholders)${NC}"
 }
@@ -369,10 +379,15 @@ run_push_merge() {
     echo -e "  ${DIM}Keeping:          $kept unchanged keys${NC}"
     echo ""
 
-    doppler secrets upload \
+    local err_file="$TMPDIR_SYNC/doppler_upload_err"
+    if ! doppler secrets upload \
         --project "$doppler_project" \
         --config "$doppler_config" \
-        "$merged_file" 2>/dev/null
+        "$merged_file" 2>"$err_file"; then
+        echo -e "${RED}Error: Doppler upload failed${NC}"
+        [[ -s "$err_file" ]] && cat "$err_file" >&2
+        return 1
+    fi
 
     echo -e "${GREEN}✓ Doppler updated successfully${NC}"
 }
