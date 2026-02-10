@@ -19,6 +19,16 @@ DOPPLER_PROJECT="my-project"
 DOPPLER_CONFIG="dev"
 ENV_FILE=".env.local"
 
+# ─── Env Sync — Local Override Keys ──────────────────
+# Machine-specific variables that should NOT be synced between environments.
+# These are things like local file paths, machine-specific credentials, etc.
+#
+# On push: stored as __REPLACE_ME__ placeholders in Doppler
+# On pull: if exists locally → kept as-is; if missing → added commented out
+#
+# Comma-separated list of key names:
+# ENV_LOCAL_KEYS="ADMIN_PYTHON_ROOT,BASE_DIR,PYTHONPATH,GOOGLE_APPLICATION_CREDENTIALS"
+
 # ─── Env Sync — Multi Config (monorepos) ────────────
 # For monorepos with multiple Doppler configs (e.g., web + mobile)
 # Uncomment and configure:
@@ -33,3 +43,7 @@ ENV_FILE=".env.local"
 # DOPPLER_PROJECT_mobile="my-project"
 # DOPPLER_CONFIG_mobile="mobile"
 # ENV_FILE_mobile="mobile/.env"
+#
+# Per-config local override keys:
+# ENV_LOCAL_KEYS_web="BASE_DIR,GOOGLE_APPLICATION_CREDENTIALS"
+# ENV_LOCAL_KEYS_mobile="BASE_DIR"

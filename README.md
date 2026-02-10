@@ -37,9 +37,45 @@ Merge-based sync that **never deletes** keys from either side. Changed values ke
 | `pnpm env:pull:force` | `make env-pull-force` | Full replace from Doppler |
 | `pnpm env:push:force` | `make env-push-force` | Full replace to Doppler |
 
+### Local Override Keys — Machine-Specific Variables
+
+Some environment variables are machine-specific (local file paths, machine credentials, etc.) and should **never** be blindly synced between environments. List them in `.matrx-tools.conf`:
+
+```bash
+ENV_LOCAL_KEYS="ADMIN_PYTHON_ROOT,BASE_DIR,PYTHONPATH,GOOGLE_APPLICATION_CREDENTIALS"
+```
+
+**What happens:**
+
+| Operation | Behavior |
+|---|---|
+| `env:push` / `env:push:force` | Stores `__REPLACE_ME__` placeholder in Doppler instead of the real value |
+| `env:pull` (key exists locally) | **Keeps your local value** — never overwrites |
+| `env:pull` (key missing locally) | Adds the key **commented out** so you're reminded to set it |
+| `env:pull:force` | Same as merge — local overrides are always preserved |
+| `env:diff` | Shows these keys with a `⚙ LOCAL OVERRIDE` label |
+
+Example: after pulling on a fresh machine, your `.env.local` will contain:
+
+```bash
+# [env-sync] Local override variables — set these for your environment:
+# ADMIN_PYTHON_ROOT="__REPLACE_ME__"
+# BASE_DIR="__REPLACE_ME__"
+# PYTHONPATH="__REPLACE_ME__"
+```
+
+Uncomment and set the values for your machine. Future pulls will leave them alone.
+
 ### Monorepo / Multi-config
 
 For projects with multiple Doppler configs (e.g., web + mobile), set `DOPPLER_MULTI="true"` in `.matrx-tools.conf`. See `templates/matrx-tools.conf.example` for the full syntax.
+
+Per-config local override keys are also supported:
+
+```bash
+ENV_LOCAL_KEYS_web="BASE_DIR,GOOGLE_APPLICATION_CREDENTIALS"
+ENV_LOCAL_KEYS_mobile="BASE_DIR"
+```
 
 ## Configuration
 
@@ -51,6 +87,9 @@ TOOLS_ENABLED="env-sync"
 DOPPLER_PROJECT="ai-matrx-admin"
 DOPPLER_CONFIG="dev"
 ENV_FILE=".env.local"
+
+# Machine-specific keys (optional)
+ENV_LOCAL_KEYS="ADMIN_PYTHON_ROOT,BASE_DIR,PYTHONPATH"
 ```
 
 ## Adding New Tools
