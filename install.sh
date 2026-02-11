@@ -34,6 +34,36 @@ echo -e "${BOLD}${CYAN}║     matrx-dev-tools installer         ║${NC}"
 echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════╝${NC}"
 echo ""
 
+# ─── Interactive input helper ─────────────────────────────────────────────────
+# Always reads from /dev/tty so curl|bash works correctly.
+
+prompt_user() {
+    local prompt_text="$1"
+    local default_value="${2:-}"
+    local result=""
+
+    if [[ -n "$default_value" ]]; then
+        echo -en "  ${prompt_text} [${GREEN}${default_value}${NC}]: " >&2
+    else
+        echo -en "  ${prompt_text}: " >&2
+    fi
+
+    # Read from /dev/tty (the actual terminal), NOT stdin
+    if read -r result < /dev/tty 2>/dev/null; then
+        : # success
+    else
+        # Fallback: if /dev/tty isn't available (rare CI scenario), use default
+        result=""
+    fi
+
+    # Use default if empty
+    if [[ -z "$result" ]]; then
+        result="$default_value"
+    fi
+
+    echo "$result"
+}
+
 # ─── Detect project root ─────────────────────────────────────────────────────
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -51,6 +81,55 @@ git clone --depth 1 --quiet "$REPO_URL" "$TMPDIR_INSTALL/matrx-dev-tools" 2>/dev
 
 TOOLS_SRC="$TMPDIR_INSTALL/matrx-dev-tools"
 
+# ─── Smart defaults ──────────────────────────────────────────────────────────
+
+detect_project_type() {
+    if [[ -f "package.json" ]]; then
+        echo "node"
+    elif [[ -f "pyproject.toml" ]] || [[ -f "setup.py" ]] || [[ -f "requirements.txt" ]]; then
+        echo "python"
+    else
+        echo "node"
+    fi
+}
+
+detect_project_name() {
+    # Best guess: repo directory name (matches Doppler project name ~90% of the time)
+    basename "$PROJECT_ROOT"
+}
+
+detect_env_file() {
+    local project_type="$1"
+
+    # Check for existing env files first
+    if [[ -f ".env.local" ]]; then
+        echo ".env.local"
+        return
+    fi
+    if [[ -f ".env" ]]; then
+        echo ".env"
+        return
+    fi
+
+    # Framework-specific defaults
+    if [[ -f "next.config.ts" ]] || [[ -f "next.config.js" ]] || [[ -f "next.config.mjs" ]]; then
+        echo ".env.local"
+        return
+    fi
+
+    # General defaults by project type
+    if [[ "$project_type" == "node" ]]; then
+        echo ".env.local"
+    else
+        echo ".env"
+    fi
+}
+
+detect_doppler_config() {
+    # Default to "dev" — most common for local development
+    echo "dev"
+}
+
 # ─── Handle config file ─────────────────────────────────────────────────────
 
 if [[ ! -f "$CONF_FILE" ]]; then
@@ -58,73 +137,115 @@ if [[ ! -f "$CONF_FILE" ]]; then
     echo -e "${YELLOW}No ${CONF_FILE} found. Let's create one.${NC}"
     echo ""
 
-    # Detect project type
-    if [[ -f "package.json" ]]; then
-        detected_type="node"
-    elif [[ -f "pyproject.toml" ]] || [[ -f "setup.py" ]] || [[ -f "requirements.txt" ]]; then
-        detected_type="python"
-    else
-        detected_type="node"
-    fi
+    # Detect smart defaults
+    detected_type=$(detect_project_type)
+    detected_name=$(detect_project_name)
 
-    echo -e "  Detected project type: ${GREEN}${detected_type}${NC}"
-    echo -n "  Project type (node/python) [${detected_type}]: "
-    read -r user_type
-    PROJECT_TYPE="${user_type:-$detected_type}"
+    PROJECT_TYPE=$(prompt_user "Project type (node/python)" "$detected_type")
 
-    echo -n "  Doppler project name: "
-    read -r DOPPLER_PROJECT
+    detected_env=$(detect_env_file "$PROJECT_TYPE")
+    detected_config=$(detect_doppler_config)
+
+    DOPPLER_PROJECT=$(prompt_user "Doppler project name" "$detected_name")
+
     if [[ -z "$DOPPLER_PROJECT" ]]; then
-        echo -e "${RED}Doppler project name is required.${NC}"
+        echo -e "${RED}Error: Doppler project name is required.${NC}"
+        echo -e "${DIM}This is the project name in your Doppler dashboard.${NC}"
         exit 1
     fi
 
-    echo -n "  Doppler config [dev]: "
-    read -r user_config
-    DOPPLER_CONFIG="${user_config:-dev}"
+    DOPPLER_CONFIG=$(prompt_user "Doppler config" "$detected_config")
+    ENV_FILE=$(prompt_user "Env file" "$detected_env")
 
-    if [[ "$PROJECT_TYPE" == "node" ]]; then
-        default_env=".env.local"
-    else
-        default_env=".env"
+    # Validate: don't write garbage
+    if [[ "$DOPPLER_PROJECT" == *"#"* ]] || [[ "$DOPPLER_PROJECT" == *"source"* ]] || [[ -z "$DOPPLER_PROJECT" ]]; then
+        echo -e "${RED}Error: Invalid Doppler project name: '${DOPPLER_PROJECT}'${NC}"
+        echo -e "${DIM}This usually means stdin was consumed by curl. Please create .matrx-tools.conf manually.${NC}"
+        echo -e "${DIM}See: https://github.com/armanisadeghi/matrx-dev-tools#configuration${NC}"
+        exit 1
     fi
-    echo -n "  Env file [${default_env}]: "
-    read -r user_env
-    ENV_FILE="${user_env:-$default_env}"
 
-    cat > "$CONF_FILE" << CONF
-# .matrx-tools.conf — Project configuration for matrx-dev-tools
-# Docs: https://github.com/armanisadeghi/matrx-dev-tools
-
-# Project type: "node" or "python"
-PROJECT_TYPE="${PROJECT_TYPE}"
-
-# ─── Tools to install ───────────────────────────────
-TOOLS_ENABLED="env-sync"
-
-# ─── Env Sync Configuration ─────────────────────────
-DOPPLER_PROJECT="${DOPPLER_PROJECT}"
-DOPPLER_CONFIG="${DOPPLER_CONFIG}"
-ENV_FILE="${ENV_FILE}"
-
-# ─── Multi-config mode (uncomment for monorepos) ────
-# DOPPLER_MULTI="true"
-# DOPPLER_CONFIGS="web,mobile"
-# DOPPLER_PROJECT_web="my-project"
-# DOPPLER_CONFIG_web="web"
-# ENV_FILE_web="web/.env.local"
-# DOPPLER_PROJECT_mobile="my-project"
-# DOPPLER_CONFIG_mobile="mobile"
-# ENV_FILE_mobile="mobile/.env"
-CONF
+    # Write config using explicit echo statements (not heredoc with interpolation)
+    {
+        echo '# .matrx-tools.conf — Project configuration for matrx-dev-tools'
+        echo '# Docs: https://github.com/armanisadeghi/matrx-dev-tools'
+        echo ''
+        echo '# Project type: "node" or "python"'
+        echo "PROJECT_TYPE=\"${PROJECT_TYPE}\""
+        echo ''
+        echo '# ─── Tools to install ───────────────────────────────'
+        echo 'TOOLS_ENABLED="env-sync"'
+        echo ''
+        echo '# ─── Env Sync Configuration ─────────────────────────'
+        echo "DOPPLER_PROJECT=\"${DOPPLER_PROJECT}\""
+        echo "DOPPLER_CONFIG=\"${DOPPLER_CONFIG}\""
+        echo "ENV_FILE=\"${ENV_FILE}\""
+        echo ''
+        echo '# ─── Machine-specific keys (optional) ──────────────'
+        echo '# ENV_LOCAL_KEYS="ADMIN_PYTHON_ROOT,BASE_DIR,PYTHONPATH"'
+        echo ''
+        echo '# ─── Multi-config mode (uncomment for monorepos) ────'
+        echo '# DOPPLER_MULTI="true"'
+        echo '# DOPPLER_CONFIGS="web,mobile"'
+        echo '# DOPPLER_PROJECT_web="my-project"'
+        echo '# DOPPLER_CONFIG_web="web"'
+        echo '# ENV_FILE_web="web/.env.local"'
+        echo '# DOPPLER_PROJECT_mobile="my-project"'
+        echo '# DOPPLER_CONFIG_mobile="mobile"'
+        echo '# ENV_FILE_mobile="mobile/.env"'
+    } > "$CONF_FILE"
 
     echo ""
     echo -e "${GREEN}✓ Created ${CONF_FILE}${NC}"
+    echo -e "${DIM}  DOPPLER_PROJECT=${DOPPLER_PROJECT}${NC}"
+    echo -e "${DIM}  DOPPLER_CONFIG=${DOPPLER_CONFIG}${NC}"
+    echo -e "${DIM}  ENV_FILE=${ENV_FILE}${NC}"
+else
+    echo -e "${DIM}Found existing ${CONF_FILE}${NC}"
 fi
 
 # Source the config
 # shellcheck disable=SC1090
 source "$CONF_FILE"
+
+# ─── Validate config after sourcing ──────────────────────────────────────────
+
+validate_config() {
+    local has_errors=0
+
+    if [[ -z "${DOPPLER_PROJECT:-}" ]] || [[ "${DOPPLER_PROJECT:-}" == "# "* ]] || [[ "${DOPPLER_PROJECT:-}" == *"source"* ]]; then
+        echo -e "${RED}Error: DOPPLER_PROJECT is missing or invalid in ${CONF_FILE}${NC}"
+        echo -e "${DIM}  Current value: '${DOPPLER_PROJECT:-<empty>}'${NC}"
+        echo -e "${DIM}  Expected: your Doppler project name (e.g., 'my-app')${NC}"
+        has_errors=1
+    fi
+
+    if [[ -z "${DOPPLER_CONFIG:-}" ]] || [[ "${DOPPLER_CONFIG:-}" == "# "* ]]; then
+        echo -e "${RED}Error: DOPPLER_CONFIG is missing or invalid in ${CONF_FILE}${NC}"
+        echo -e "${DIM}  Current value: '${DOPPLER_CONFIG:-<empty>}'${NC}"
+        echo -e "${DIM}  Expected: your Doppler config name (e.g., 'dev')${NC}"
+        has_errors=1
+    fi
+
+    if [[ -z "${ENV_FILE:-}" ]] || [[ "${ENV_FILE:-}" == *"source"* ]] || [[ "${ENV_FILE:-}" == *'$'* ]]; then
+        echo -e "${RED}Error: ENV_FILE is missing or invalid in ${CONF_FILE}${NC}"
+        echo -e "${DIM}  Current value: '${ENV_FILE:-<empty>}'${NC}"
+        echo -e "${DIM}  Expected: path to your env file (e.g., '.env.local')${NC}"
+        has_errors=1
+    fi
+
+    if [[ $has_errors -eq 1 ]]; then
+        echo ""
+        echo -e "${YELLOW}Your ${CONF_FILE} has invalid values. This usually happens when the installer${NC}"
+        echo -e "${YELLOW}was run via curl|bash and the prompts couldn't read from the terminal.${NC}"
+        echo ""
+        echo -e "${CYAN}To fix: edit ${CONF_FILE} and set the correct values, then re-run the installer.${NC}"
+        echo -e "${DIM}Or delete ${CONF_FILE} and re-run to start fresh.${NC}"
+        exit 1
+    fi
+}
+
+validate_config
 
 # ─── Install scripts ─────────────────────────────────────────────────────────
 
@@ -258,6 +379,30 @@ tools-update:
 MAKEFILE_SNIPPET
 
     echo -e "  ${GREEN}✓${NC} Makefile targets registered"
+fi
+
+# ─── Check Doppler auth ──────────────────────────────────────────────────────
+
+echo ""
+
+if command -v doppler &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} Doppler CLI found"
+
+    # Check if doppler is authenticated
+    if doppler me &>/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} Doppler authenticated"
+    else
+        echo ""
+        echo -e "  ${YELLOW}⚠ Doppler CLI is installed but not authenticated${NC}"
+        echo -e "  ${DIM}Run: ${CYAN}doppler login${NC}"
+        echo -e "  ${DIM}Then: ${CYAN}pnpm env:pull${NC} ${DIM}(or make env-pull)${NC}"
+    fi
+else
+    echo ""
+    echo -e "  ${YELLOW}⚠ Doppler CLI not found${NC}"
+    echo -e "  ${DIM}env-sync requires the Doppler CLI to function.${NC}"
+    echo -e "  ${DIM}Install: ${CYAN}https://docs.doppler.com/docs/install-cli${NC}"
+    echo -e "  ${DIM}Then authenticate: ${CYAN}doppler login${NC}"
 fi
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
