@@ -4,35 +4,10 @@ Shared developer tooling for all AI Matrx projects. One repo, works everywhere �
 
 ## Prerequisites
 
-### 1. Doppler CLI
+- **bash 3.2+** — comes standard on macOS and Linux
+- **git** — for cloning repos and detecting project root
 
-env-sync uses [Doppler](https://www.doppler.com/) to manage secrets. You need the CLI installed and authenticated **once per machine**.
-
-**Install the CLI:**
-
-```bash
-# macOS
-brew install dopplerhq/cli/doppler
-
-# Linux (Debian/Ubuntu)
-curl -sLf --retry 3 --tlsv1.2 --proto "=https" 'https://packages.doppler.com/public/cli/gpg.DE2A7741A397C129.key' | sudo gpg --dearmor -o /usr/share/keyrings/doppler-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/doppler-archive-keyring.gpg] https://packages.doppler.com/public/cli/deb/debian any-version main" | sudo tee /etc/apt/sources.list.d/doppler-cli.list
-sudo apt update && sudo apt install doppler
-
-# Other: https://docs.doppler.com/docs/install-cli
-```
-
-**Authenticate (one-time):**
-
-```bash
-doppler login
-```
-
-This opens your browser to authenticate. Once done, all env-sync commands work automatically — no tokens or keys to manage.
-
-### 2. bash 3.2+
-
-Comes standard on macOS and Linux. No action needed.
+That's it. The installer handles everything else automatically — including installing the Doppler CLI and walking you through authentication.
 
 ## Quick Start — New Project
 
@@ -47,7 +22,8 @@ The installer will:
 2. Ask for your Doppler project name (defaults to the repo directory name)
 3. Install scripts to `scripts/matrx/`
 4. Register commands in `package.json` (Node) or `Makefile` (Python)
-5. Verify Doppler CLI is installed and authenticated
+5. Install the Doppler CLI if missing (macOS via Homebrew, Linux via apt/rpm/install script)
+6. Walk you through `doppler login` if not authenticated
 
 ### After Installing
 
@@ -62,19 +38,18 @@ That's it. Your `.env.local` (or `.env`) is populated from Doppler.
 
 ## Quick Start — Cloning an Existing Project
 
-If the project already has matrx-dev-tools committed (most do), there's nothing to install:
+If the project already has matrx-dev-tools committed (most do), there's almost nothing to do:
 
 ```bash
 git clone <repo>
 cd <repo>
 
-# Make sure Doppler is set up (one-time per machine)
-doppler login
-
-# Pull your env
+# Pull your env (will prompt for Doppler login if needed)
 pnpm env:pull       # Node
 make env-pull       # Python
 ```
+
+If Doppler CLI isn't installed or you aren't logged in yet, the tool will tell you exactly what to do.
 
 ## Update
 
@@ -174,11 +149,17 @@ curl -sL https://raw.githubusercontent.com/armanisadeghi/matrx-dev-tools/main/in
 
 ### `Doppler CLI not found`
 
-Install the Doppler CLI — see [Prerequisites](#1-doppler-cli) above.
+Re-run the installer — it will auto-install Doppler for you:
+
+```bash
+pnpm tools:update    # or: curl -sL ... | bash
+```
+
+If automatic install fails (permissions, unsupported OS), install manually: https://docs.doppler.com/docs/install-cli
 
 ### `Doppler CLI is not authenticated`
 
-Run `doppler login` to authenticate. This is a one-time setup per machine.
+Run `doppler login` to authenticate. This is a one-time setup per machine. The installer will offer to do this for you if you run it again.
 
 ## Adding New Tools
 
@@ -192,5 +173,6 @@ Run `doppler login` to authenticate. This is a one-time setup per machine.
 
 - bash 3.2+ (macOS default works)
 - git
-- [Doppler CLI](https://docs.doppler.com/docs/install-cli) (for env-sync) — authenticated via `doppler login`
+- [Doppler CLI](https://docs.doppler.com/docs/install-cli) (for env-sync) — **auto-installed** by the installer
 - node (for Node projects — used to patch package.json)
+- sudo access (only needed if Doppler CLI needs to be installed via apt/rpm)
