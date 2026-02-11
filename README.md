@@ -104,18 +104,73 @@ Uncomment and set the values for your machine. Future pulls will leave them alon
 
 ### Monorepo / Multi-config
 
-For projects with multiple Doppler configs (e.g., web + mobile), set `DOPPLER_MULTI="true"` in `.matrx-tools.conf`. See `templates/matrx-tools.conf.example` for the full syntax.
+The installer **automatically detects** monorepo and multi-service structures. It scans for:
+
+- **pnpm/npm/yarn workspaces** in `package.json`
+- **Turborepo/Nx** config files (`turbo.json`, `nx.json`)
+- **Known directory patterns**: `apps/*/`, `packages/*/`, `services/*/` with their own `package.json` or `pyproject.toml`
+- **Docker Compose** `env_file:` entries pointing to subdirectories
+- **Existing `.env` files** in subdirectories
+
+When detected, the installer offers to set up multi-config automatically:
+
+```
+  Detected project structure:
+    apps/web/     (Next.js)
+    apps/api/     (Python)
+
+  Set up multi-config env sync for these? (y/n) [y]:
+
+  [web]
+    Doppler project [my-app]:
+    Doppler config [web]:
+    Env file [apps/web/.env.local]:
+
+  [api]
+    Doppler project [my-app]:
+    Doppler config [api]:
+    Env file [apps/api/.env]:
+```
+
+This generates a `.matrx-tools.conf` with `DOPPLER_MULTI="true"`. All `env:pull`, `env:push`, `env:diff`, and `env:status` commands then operate on every config automatically.
+
+#### Manual multi-config setup
+
+If you prefer to set it up manually (or the auto-detection didn't find your structure), edit `.matrx-tools.conf`:
+
+```bash
+DOPPLER_MULTI="true"
+DOPPLER_CONFIGS="web,api"
+
+DOPPLER_PROJECT_web="my-project"
+DOPPLER_CONFIG_web="web"
+ENV_FILE_web="apps/web/.env.local"
+
+DOPPLER_PROJECT_api="my-project"
+DOPPLER_CONFIG_api="api"
+ENV_FILE_api="apps/api/.env"
+```
+
+#### Switching between single and multi-config
+
+To switch from single to multi: add the `DOPPLER_MULTI` / `DOPPLER_CONFIGS` / per-config keys above. The root `DOPPLER_PROJECT` / `DOPPLER_CONFIG` / `ENV_FILE` are ignored when `DOPPLER_MULTI="true"`.
+
+To switch from multi to single: set `DOPPLER_MULTI="false"` (or remove it) and ensure the root keys are set.
+
+Or just delete `.matrx-tools.conf` and re-run the installer — it will re-detect and ask you.
 
 Per-config local override keys are also supported:
 
 ```bash
 ENV_LOCAL_KEYS_web="BASE_DIR,GOOGLE_APPLICATION_CREDENTIALS"
-ENV_LOCAL_KEYS_mobile="BASE_DIR"
+ENV_LOCAL_KEYS_api="BASE_DIR"
 ```
 
 ## Configuration
 
-Each project has a `.matrx-tools.conf` file in its root:
+Each project has a `.matrx-tools.conf` file in its root.
+
+**Single-config (most projects):**
 
 ```bash
 PROJECT_TYPE="node"
@@ -128,11 +183,29 @@ ENV_FILE=".env.local"
 ENV_LOCAL_KEYS="ADMIN_PYTHON_ROOT,BASE_DIR,PYTHONPATH"
 ```
 
+**Multi-config (monorepos / multi-service):**
+
+```bash
+PROJECT_TYPE="node"
+TOOLS_ENABLED="env-sync"
+DOPPLER_MULTI="true"
+DOPPLER_CONFIGS="web,api"
+
+DOPPLER_PROJECT_web="my-project"
+DOPPLER_CONFIG_web="web"
+ENV_FILE_web="apps/web/.env.local"
+
+DOPPLER_PROJECT_api="my-project"
+DOPPLER_CONFIG_api="api"
+ENV_FILE_api="apps/api/.env"
+```
+
 The installer creates this automatically with smart defaults:
 - **DOPPLER_PROJECT** defaults to the repo directory name
-- **DOPPLER_CONFIG** defaults to `dev`
-- **ENV_FILE** defaults to `.env.local` for Node/Next.js or `.env` for Python
+- **DOPPLER_CONFIG** defaults to `dev` (single) or sub-project name (multi)
+- **ENV_FILE** defaults to `.env.local` for Node/Next.js or `.env` for Python, scoped to sub-project path in multi-config
 - **PROJECT_TYPE** auto-detected from `package.json` / `pyproject.toml`
+- **Multi-config** auto-detected from workspaces, monorepo directories, or existing env files
 
 ## Troubleshooting
 

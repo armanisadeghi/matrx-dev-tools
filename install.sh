@@ -130,6 +130,176 @@ detect_doppler_config() {
     echo "dev"
 }
 
+# ─── Detect sub-project env file ─────────────────────────────────────────────
+
+detect_subproject_env_file() {
+    local dir="$1"
+
+    # Check for existing env files in the sub-directory
+    if [[ -f "${dir}/.env.local" ]]; then echo "${dir}/.env.local"; return; fi
+    if [[ -f "${dir}/.env" ]]; then echo "${dir}/.env"; return; fi
+
+    # Framework detection within the sub-directory
+    if [[ -f "${dir}/next.config.ts" ]] || [[ -f "${dir}/next.config.js" ]] || [[ -f "${dir}/next.config.mjs" ]]; then
+        echo "${dir}/.env.local"; return
+    fi
+
+    # Python sub-project
+    if [[ -f "${dir}/pyproject.toml" ]] || [[ -f "${dir}/setup.py" ]] || [[ -f "${dir}/requirements.txt" ]]; then
+        echo "${dir}/.env"; return
+    fi
+
+    # Node sub-project fallback
+    if [[ -f "${dir}/package.json" ]]; then
+        echo "${dir}/.env.local"; return
+    fi
+
+    echo "${dir}/.env"
+}
+
+# ─── Detect sub-project type label ───────────────────────────────────────────
+
+detect_subproject_label() {
+    local dir="$1"
+    if [[ -f "${dir}/next.config.ts" ]] || [[ -f "${dir}/next.config.js" ]] || [[ -f "${dir}/next.config.mjs" ]]; then
+        echo "Next.js"
+    elif [[ -f "${dir}/pyproject.toml" ]]; then
+        echo "Python"
+    elif [[ -f "${dir}/package.json" ]]; then
+        echo "Node"
+    else
+        echo ""
+    fi
+}
+
+# ─── Detect monorepo / multi-service structure ───────────────────────────────
+# Populates DETECTED_SUBPROJECTS array: each entry is "name:dir"
+
+DETECTED_SUBPROJECTS=()
+
+detect_project_structure() {
+    local found=()
+
+    # 1. pnpm/npm/yarn workspaces in root package.json
+    if [[ -f "package.json" ]] && command -v node &>/dev/null; then
+        local workspace_dirs
+        workspace_dirs=$(node -e "
+const pkg = JSON.parse(require('fs').readFileSync('package.json','utf8'));
+const ws = pkg.workspaces || (pkg.workspaces && pkg.workspaces.packages) || [];
+const dirs = Array.isArray(ws) ? ws : (ws.packages || []);
+dirs.forEach(d => {
+    // Expand globs like 'apps/*' by listing matching dirs
+    if (d.includes('*')) {
+        const base = d.replace(/\/?\*.*/, '');
+        try {
+            require('fs').readdirSync(base, {withFileTypes:true})
+                .filter(e => e.isDirectory())
+                .forEach(e => console.log(base + '/' + e.name));
+        } catch(e) {}
+    } else {
+        console.log(d);
+    }
+});
+" 2>/dev/null) || true
+
+        if [[ -n "$workspace_dirs" ]]; then
+            while IFS= read -r wdir; do
+                [[ -z "$wdir" ]] && continue
+                wdir="${wdir%/}"
+                if [[ -d "$wdir" ]] && { [[ -f "${wdir}/package.json" ]] || [[ -f "${wdir}/pyproject.toml" ]]; }; then
+                    local name
+                    name=$(basename "$wdir")
+                    found+=("${name}:${wdir}")
+                fi
+            done <<< "$workspace_dirs"
+        fi
+    fi
+
+    # 2. Turborepo / Nx signals (scan common dirs even without workspaces)
+    if [[ ${#found[@]} -eq 0 ]]; then
+        if [[ -f "turbo.json" ]] || [[ -f "nx.json" ]]; then
+            for search_dir in apps packages services; do
+                if [[ -d "$search_dir" ]]; then
+                    for sub in "$search_dir"/*/; do
+                        [[ ! -d "$sub" ]] && continue
+                        sub="${sub%/}"
+                        if [[ -f "${sub}/package.json" ]] || [[ -f "${sub}/pyproject.toml" ]]; then
+                            local name
+                            name=$(basename "$sub")
+                            found+=("${name}:${sub}")
+                        fi
+                    done
+                fi
+            done
+        fi
+    fi
+
+    # 3. Known monorepo directory patterns: apps/*, packages/*, services/*
+    if [[ ${#found[@]} -eq 0 ]]; then
+        for search_dir in apps packages services; do
+            if [[ -d "$search_dir" ]]; then
+                for sub in "$search_dir"/*/; do
+                    [[ ! -d "$sub" ]] && continue
+                    sub="${sub%/}"
+                    if [[ -f "${sub}/package.json" ]] || [[ -f "${sub}/pyproject.toml" ]]; then
+                        local name
+                        name=$(basename "$sub")
+                        found+=("${name}:${sub}")
+                    fi
+                done
+            fi
+        done
+    fi
+
+    # 4. Multiple env_file entries in docker-compose.yml pointing to different paths
+    if [[ ${#found[@]} -eq 0 ]] && [[ -f "docker-compose.yml" ]]; then
+        local env_files
+        env_files=$(grep -E '^\s*-?\s*env_file:' docker-compose.yml 2>/dev/null | sed 's/.*env_file:\s*//' | sed 's/^-\s*//' | tr -d ' "'"'" | sort -u) || true
+        local unique_dirs=()
+        while IFS= read -r ef; do
+            [[ -z "$ef" ]] && continue
+            local edir
+            edir=$(dirname "$ef")
+            if [[ "$edir" != "." ]] && [[ -d "$edir" ]]; then
+                # Avoid duplicates
+                local already=0
+                for ud in "${unique_dirs[@]:-}"; do
+                    [[ "$ud" == "$edir" ]] && already=1
+                done
+                if [[ $already -eq 0 ]]; then
+                    unique_dirs+=("$edir")
+                    local name
+                    name=$(basename "$edir")
+                    found+=("${name}:${edir}")
+                fi
+            fi
+        done <<< "$env_files"
+    fi
+
+    # 5. Existing .env files in immediate subdirectories (not root)
+    if [[ ${#found[@]} -eq 0 ]]; then
+        for envf in */.env */.env.local; do
+            [[ ! -f "$envf" ]] && continue
+            local edir
+            edir=$(dirname "$envf")
+            local name
+            name=$(basename "$edir")
+            # Skip hidden dirs and common non-project dirs
+            [[ "$name" == .* ]] && continue
+            [[ "$name" == "node_modules" ]] && continue
+            local already=0
+            for entry in "${found[@]:-}"; do
+                [[ "${entry%%:*}" == "$name" ]] && already=1
+            done
+            if [[ $already -eq 0 ]]; then
+                found+=("${name}:${edir}")
+            fi
+        done
+    fi
+
+    DETECTED_SUBPROJECTS=("${found[@]}")
+}
+
 # ─── Handle config file ─────────────────────────────────────────────────────
 
 if [[ ! -f "$CONF_FILE" ]]; then
@@ -143,63 +313,169 @@ if [[ ! -f "$CONF_FILE" ]]; then
 
     PROJECT_TYPE=$(prompt_user "Project type (node/python)" "$detected_type")
 
-    detected_env=$(detect_env_file "$PROJECT_TYPE")
-    detected_config=$(detect_doppler_config)
+    # Scan for multi-service / monorepo structure
+    detect_project_structure
+    USE_MULTI="false"
 
-    DOPPLER_PROJECT=$(prompt_user "Doppler project name" "$detected_name")
+    if [[ ${#DETECTED_SUBPROJECTS[@]} -ge 2 ]]; then
+        echo ""
+        echo -e "  ${CYAN}Detected project structure:${NC}"
+        for entry in "${DETECTED_SUBPROJECTS[@]}"; do
+            _sp_name="${entry%%:*}"
+            _sp_dir="${entry#*:}"
+            _sp_label=$(detect_subproject_label "$_sp_dir")
+            if [[ -n "$_sp_label" ]]; then
+                echo -e "    ${GREEN}${_sp_dir}/${NC}  ${DIM}(${_sp_label})${NC}"
+            else
+                echo -e "    ${GREEN}${_sp_dir}/${NC}"
+            fi
+        done
+        echo ""
 
-    if [[ -z "$DOPPLER_PROJECT" ]]; then
-        echo -e "${RED}Error: Doppler project name is required.${NC}"
-        echo -e "${DIM}This is the project name in your Doppler dashboard.${NC}"
-        exit 1
+        USE_MULTI=$(prompt_user "Set up multi-config env sync for these? (y/n)" "y")
+        if [[ "$USE_MULTI" == "y" || "$USE_MULTI" == "Y" || "$USE_MULTI" == "yes" ]]; then
+            USE_MULTI="true"
+        else
+            USE_MULTI="false"
+        fi
     fi
 
-    DOPPLER_CONFIG=$(prompt_user "Doppler config" "$detected_config")
-    ENV_FILE=$(prompt_user "Env file" "$detected_env")
+    if [[ "$USE_MULTI" == "true" ]]; then
+        # ─── Multi-config setup flow ──────────────────────────────
+        DOPPLER_PROJECT=$(prompt_user "Doppler project name" "$detected_name")
 
-    # Validate: don't write garbage
-    if [[ "$DOPPLER_PROJECT" == *"#"* ]] || [[ "$DOPPLER_PROJECT" == *"source"* ]] || [[ -z "$DOPPLER_PROJECT" ]]; then
-        echo -e "${RED}Error: Invalid Doppler project name: '${DOPPLER_PROJECT}'${NC}"
-        echo -e "${DIM}This usually means stdin was consumed by curl. Please create .matrx-tools.conf manually.${NC}"
-        echo -e "${DIM}See: https://github.com/armanisadeghi/matrx-dev-tools#configuration${NC}"
-        exit 1
+        if [[ -z "$DOPPLER_PROJECT" ]]; then
+            echo -e "${RED}Error: Doppler project name is required.${NC}"
+            exit 1
+        fi
+
+        # Validate input
+        if [[ "$DOPPLER_PROJECT" == *"#"* ]] || [[ "$DOPPLER_PROJECT" == *"source"* ]]; then
+            echo -e "${RED}Error: Invalid Doppler project name: '${DOPPLER_PROJECT}'${NC}"
+            echo -e "${DIM}See: https://github.com/armanisadeghi/matrx-dev-tools#configuration${NC}"
+            exit 1
+        fi
+
+        # Collect per-subproject config using a temp file (bash 3.2 compatible, no assoc arrays)
+        _multi_tmp=$(mktemp)
+        _config_names=""
+
+        echo ""
+        for entry in "${DETECTED_SUBPROJECTS[@]}"; do
+            _sp_name="${entry%%:*}"
+            _sp_dir="${entry#*:}"
+            _sp_env_default=$(detect_subproject_env_file "$_sp_dir")
+
+            echo -e "  ${BOLD}[${_sp_name}]${NC}"
+            _sp_dp=$(prompt_user "  Doppler project" "$DOPPLER_PROJECT")
+            _sp_dc=$(prompt_user "  Doppler config" "$_sp_name")
+            _sp_ef=$(prompt_user "  Env file" "$_sp_env_default")
+            echo ""
+
+            # Store in temp file: name|project|config|envfile
+            echo "${_sp_name}|${_sp_dp}|${_sp_dc}|${_sp_ef}" >> "$_multi_tmp"
+
+            if [[ -n "$_config_names" ]]; then
+                _config_names="${_config_names},${_sp_name}"
+            else
+                _config_names="$_sp_name"
+            fi
+        done
+
+        # Write multi-config conf file
+        {
+            echo '# .matrx-tools.conf — Project configuration for matrx-dev-tools'
+            echo '# Docs: https://github.com/armanisadeghi/matrx-dev-tools'
+            echo ''
+            echo '# Project type: "node" or "python"'
+            echo "PROJECT_TYPE=\"${PROJECT_TYPE}\""
+            echo ''
+            echo '# ─── Tools to install ───────────────────────────────'
+            echo 'TOOLS_ENABLED="env-sync"'
+            echo ''
+            echo '# ─── Multi-config env sync ──────────────────────────'
+            echo 'DOPPLER_MULTI="true"'
+            echo "DOPPLER_CONFIGS=\"${_config_names}\""
+            echo ''
+            while IFS='|' read -r _name _dp _dc _ef; do
+                echo "DOPPLER_PROJECT_${_name}=\"${_dp}\""
+                echo "DOPPLER_CONFIG_${_name}=\"${_dc}\""
+                echo "ENV_FILE_${_name}=\"${_ef}\""
+                echo ''
+            done < "$_multi_tmp"
+            echo '# ─── Machine-specific keys per config (optional) ────'
+            while IFS='|' read -r _name _dp _dc _ef; do
+                echo "# ENV_LOCAL_KEYS_${_name}=\"\""
+            done < "$_multi_tmp"
+        } > "$CONF_FILE"
+
+        echo -e "${GREEN}✓ Created ${CONF_FILE} (multi-config)${NC}"
+        while IFS='|' read -r _name _dp _dc _ef; do
+            echo -e "${DIM}  [${_name}] ${_dp} / ${_dc} → ${_ef}${NC}"
+        done < "$_multi_tmp"
+
+        rm -f "$_multi_tmp"
+
+    else
+        # ─── Single-config setup flow (existing behavior) ─────────
+        detected_env=$(detect_env_file "$PROJECT_TYPE")
+        detected_config=$(detect_doppler_config)
+
+        DOPPLER_PROJECT=$(prompt_user "Doppler project name" "$detected_name")
+
+        if [[ -z "$DOPPLER_PROJECT" ]]; then
+            echo -e "${RED}Error: Doppler project name is required.${NC}"
+            echo -e "${DIM}This is the project name in your Doppler dashboard.${NC}"
+            exit 1
+        fi
+
+        DOPPLER_CONFIG=$(prompt_user "Doppler config" "$detected_config")
+        ENV_FILE=$(prompt_user "Env file" "$detected_env")
+
+        # Validate: don't write garbage
+        if [[ "$DOPPLER_PROJECT" == *"#"* ]] || [[ "$DOPPLER_PROJECT" == *"source"* ]] || [[ -z "$DOPPLER_PROJECT" ]]; then
+            echo -e "${RED}Error: Invalid Doppler project name: '${DOPPLER_PROJECT}'${NC}"
+            echo -e "${DIM}This usually means stdin was consumed by curl. Please create .matrx-tools.conf manually.${NC}"
+            echo -e "${DIM}See: https://github.com/armanisadeghi/matrx-dev-tools#configuration${NC}"
+            exit 1
+        fi
+
+        # Write config using explicit echo statements
+        {
+            echo '# .matrx-tools.conf — Project configuration for matrx-dev-tools'
+            echo '# Docs: https://github.com/armanisadeghi/matrx-dev-tools'
+            echo ''
+            echo '# Project type: "node" or "python"'
+            echo "PROJECT_TYPE=\"${PROJECT_TYPE}\""
+            echo ''
+            echo '# ─── Tools to install ───────────────────────────────'
+            echo 'TOOLS_ENABLED="env-sync"'
+            echo ''
+            echo '# ─── Env Sync Configuration ─────────────────────────'
+            echo "DOPPLER_PROJECT=\"${DOPPLER_PROJECT}\""
+            echo "DOPPLER_CONFIG=\"${DOPPLER_CONFIG}\""
+            echo "ENV_FILE=\"${ENV_FILE}\""
+            echo ''
+            echo '# ─── Machine-specific keys (optional) ──────────────'
+            echo '# ENV_LOCAL_KEYS="ADMIN_PYTHON_ROOT,BASE_DIR,PYTHONPATH"'
+            echo ''
+            echo '# ─── Multi-config mode (uncomment for monorepos) ────'
+            echo '# DOPPLER_MULTI="true"'
+            echo '# DOPPLER_CONFIGS="web,api"'
+            echo '# DOPPLER_PROJECT_web="my-project"'
+            echo '# DOPPLER_CONFIG_web="web"'
+            echo '# ENV_FILE_web="apps/web/.env.local"'
+            echo '# DOPPLER_PROJECT_api="my-project"'
+            echo '# DOPPLER_CONFIG_api="api"'
+            echo '# ENV_FILE_api="apps/api/.env"'
+        } > "$CONF_FILE"
+
+        echo ""
+        echo -e "${GREEN}✓ Created ${CONF_FILE}${NC}"
+        echo -e "${DIM}  DOPPLER_PROJECT=${DOPPLER_PROJECT}${NC}"
+        echo -e "${DIM}  DOPPLER_CONFIG=${DOPPLER_CONFIG}${NC}"
+        echo -e "${DIM}  ENV_FILE=${ENV_FILE}${NC}"
     fi
-
-    # Write config using explicit echo statements (not heredoc with interpolation)
-    {
-        echo '# .matrx-tools.conf — Project configuration for matrx-dev-tools'
-        echo '# Docs: https://github.com/armanisadeghi/matrx-dev-tools'
-        echo ''
-        echo '# Project type: "node" or "python"'
-        echo "PROJECT_TYPE=\"${PROJECT_TYPE}\""
-        echo ''
-        echo '# ─── Tools to install ───────────────────────────────'
-        echo 'TOOLS_ENABLED="env-sync"'
-        echo ''
-        echo '# ─── Env Sync Configuration ─────────────────────────'
-        echo "DOPPLER_PROJECT=\"${DOPPLER_PROJECT}\""
-        echo "DOPPLER_CONFIG=\"${DOPPLER_CONFIG}\""
-        echo "ENV_FILE=\"${ENV_FILE}\""
-        echo ''
-        echo '# ─── Machine-specific keys (optional) ──────────────'
-        echo '# ENV_LOCAL_KEYS="ADMIN_PYTHON_ROOT,BASE_DIR,PYTHONPATH"'
-        echo ''
-        echo '# ─── Multi-config mode (uncomment for monorepos) ────'
-        echo '# DOPPLER_MULTI="true"'
-        echo '# DOPPLER_CONFIGS="web,mobile"'
-        echo '# DOPPLER_PROJECT_web="my-project"'
-        echo '# DOPPLER_CONFIG_web="web"'
-        echo '# ENV_FILE_web="web/.env.local"'
-        echo '# DOPPLER_PROJECT_mobile="my-project"'
-        echo '# DOPPLER_CONFIG_mobile="mobile"'
-        echo '# ENV_FILE_mobile="mobile/.env"'
-    } > "$CONF_FILE"
-
-    echo ""
-    echo -e "${GREEN}✓ Created ${CONF_FILE}${NC}"
-    echo -e "${DIM}  DOPPLER_PROJECT=${DOPPLER_PROJECT}${NC}"
-    echo -e "${DIM}  DOPPLER_CONFIG=${DOPPLER_CONFIG}${NC}"
-    echo -e "${DIM}  ENV_FILE=${ENV_FILE}${NC}"
 else
     echo -e "${DIM}Found existing ${CONF_FILE}${NC}"
 fi
@@ -210,39 +486,93 @@ source "$CONF_FILE"
 
 # ─── Validate config after sourcing ──────────────────────────────────────────
 
+validate_single_key() {
+    local key_name="$1"
+    local key_value="$2"
+    local context="$3"
+
+    if [[ -z "$key_value" ]]; then
+        echo -e "${RED}Error: ${key_name} is not set ${context}${NC}"
+        return 1
+    fi
+    if [[ "$key_value" == "# "* ]] || [[ "$key_value" == *"source "* ]] || [[ "$key_value" == *"shellcheck"* ]] || [[ "$key_value" == *'$'* ]]; then
+        echo -e "${RED}Error: ${key_name} has an invalid value: '${key_value}' ${context}${NC}"
+        return 1
+    fi
+    return 0
+}
+
 validate_config() {
     local has_errors=0
 
-    if [[ -z "${DOPPLER_PROJECT:-}" ]] || [[ "${DOPPLER_PROJECT:-}" == "# "* ]] || [[ "${DOPPLER_PROJECT:-}" == *"source"* ]]; then
-        echo -e "${RED}Error: DOPPLER_PROJECT is missing or invalid in ${CONF_FILE}${NC}"
-        echo -e "${DIM}  Current value: '${DOPPLER_PROJECT:-<empty>}'${NC}"
-        echo -e "${DIM}  Expected: your Doppler project name (e.g., 'my-app')${NC}"
-        has_errors=1
-    fi
+    if [[ "${DOPPLER_MULTI:-false}" == "true" ]]; then
+        # ─── Multi-config validation ──────────────────────────────
+        local configs_list="${DOPPLER_CONFIGS:-}"
+        if [[ -z "$configs_list" ]]; then
+            echo -e "${RED}Error: DOPPLER_MULTI is true but DOPPLER_CONFIGS is empty in ${CONF_FILE}${NC}"
+            echo -e "${DIM}  Set DOPPLER_CONFIGS to a comma-separated list of config names (e.g., 'web,api')${NC}"
+            has_errors=1
+        else
+            IFS=',' read -ra config_names <<< "$configs_list"
+            for cname in "${config_names[@]}"; do
+                cname=$(echo "$cname" | tr -d ' ')
+                [[ -z "$cname" ]] && continue
 
-    if [[ -z "${DOPPLER_CONFIG:-}" ]] || [[ "${DOPPLER_CONFIG:-}" == "# "* ]]; then
-        echo -e "${RED}Error: DOPPLER_CONFIG is missing or invalid in ${CONF_FILE}${NC}"
-        echo -e "${DIM}  Current value: '${DOPPLER_CONFIG:-<empty>}'${NC}"
-        echo -e "${DIM}  Expected: your Doppler config name (e.g., 'dev')${NC}"
-        has_errors=1
-    fi
+                local ctx="in ${CONF_FILE} [config: ${cname}]"
+                local dp dc ef
+                dp=$(conf_get "DOPPLER_PROJECT_${cname}" "")
+                dc=$(conf_get "DOPPLER_CONFIG_${cname}" "")
+                ef=$(conf_get "ENV_FILE_${cname}" "")
 
-    if [[ -z "${ENV_FILE:-}" ]] || [[ "${ENV_FILE:-}" == *"source"* ]] || [[ "${ENV_FILE:-}" == *'$'* ]]; then
-        echo -e "${RED}Error: ENV_FILE is missing or invalid in ${CONF_FILE}${NC}"
-        echo -e "${DIM}  Current value: '${ENV_FILE:-<empty>}'${NC}"
-        echo -e "${DIM}  Expected: path to your env file (e.g., '.env.local')${NC}"
-        has_errors=1
+                if ! validate_single_key "DOPPLER_PROJECT_${cname}" "$dp" "$ctx"; then
+                    echo -e "${DIM}  Expected: DOPPLER_PROJECT_${cname}=\"your-doppler-project\"${NC}"
+                    has_errors=1
+                fi
+                if ! validate_single_key "DOPPLER_CONFIG_${cname}" "$dc" "$ctx"; then
+                    echo -e "${DIM}  Expected: DOPPLER_CONFIG_${cname}=\"${cname}\"${NC}"
+                    has_errors=1
+                fi
+                if [[ -z "$ef" ]]; then
+                    echo -e "${RED}Error: ENV_FILE_${cname} is not set ${ctx}${NC}"
+                    echo -e "${DIM}  Expected: ENV_FILE_${cname}=\"path/to/.env\"${NC}"
+                    has_errors=1
+                fi
+            done
+        fi
+    else
+        # ─── Single-config validation ─────────────────────────────
+        local ctx="in ${CONF_FILE}"
+        if ! validate_single_key "DOPPLER_PROJECT" "${DOPPLER_PROJECT:-}" "$ctx"; then
+            echo -e "${DIM}  Expected: your Doppler project name (e.g., 'my-app')${NC}"
+            has_errors=1
+        fi
+        if ! validate_single_key "DOPPLER_CONFIG" "${DOPPLER_CONFIG:-}" "$ctx"; then
+            echo -e "${DIM}  Expected: your Doppler config name (e.g., 'dev')${NC}"
+            has_errors=1
+        fi
+        if [[ -z "${ENV_FILE:-}" ]]; then
+            echo -e "${RED}Error: ENV_FILE is not set in ${CONF_FILE}${NC}"
+            echo -e "${DIM}  Expected: path to your env file (e.g., '.env.local')${NC}"
+            has_errors=1
+        fi
     fi
 
     if [[ $has_errors -eq 1 ]]; then
         echo ""
-        echo -e "${YELLOW}Your ${CONF_FILE} has invalid values. This usually happens when the installer${NC}"
-        echo -e "${YELLOW}was run via curl|bash and the prompts couldn't read from the terminal.${NC}"
-        echo ""
+        echo -e "${YELLOW}Your ${CONF_FILE} has invalid values.${NC}"
         echo -e "${CYAN}To fix: edit ${CONF_FILE} and set the correct values, then re-run the installer.${NC}"
         echo -e "${DIM}Or delete ${CONF_FILE} and re-run to start fresh.${NC}"
         exit 1
     fi
+}
+
+# Need conf_get available for validation before utils.sh is installed
+conf_get() {
+    local key="$1"
+    local default="${2:-}"
+    local val
+    eval "val=\"\${${key}:-${default}}\""
+    echo "$val"
 }
 
 validate_config
