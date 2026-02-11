@@ -60,7 +60,7 @@ LOCAL_OVERRIDE_PLACEHOLDER="__REPLACE_ME__"
 
 get_local_keys_list() {
     local config_name="$1"
-    get_config_value "$config_name" "ENV_LOCAL_KEYS" "" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$'
+    get_config_value "$config_name" "ENV_LOCAL_KEYS" "" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | (grep -v '^$' || true)
 }
 
 is_local_key() {

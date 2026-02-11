@@ -381,6 +381,58 @@ MAKEFILE_SNIPPET
     echo -e "  ${GREEN}✓${NC} Makefile targets registered"
 fi
 
+# ─── Spinner helper ───────────────────────────────────────────────────────────
+
+spinner_pid=""
+
+start_spinner() {
+    local message="${1:-Working...}"
+    (
+        local chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+        local i=0
+        while true; do
+            printf '\r  %s %s ' "${chars:i%${#chars}:1}" "$message" >&2
+            i=$((i + 1))
+            sleep 0.1
+        done
+    ) &
+    spinner_pid=$!
+}
+
+stop_spinner() {
+    local success="${1:-1}"
+    local message="${2:-}"
+    if [[ -n "$spinner_pid" ]]; then
+        kill "$spinner_pid" 2>/dev/null || true
+        wait "$spinner_pid" 2>/dev/null || true
+        spinner_pid=""
+    fi
+    printf '\r' >&2
+    # Clear the line
+    printf '  %-60s\r' "" >&2
+    if [[ -n "$message" ]]; then
+        if [[ "$success" == "1" ]]; then
+            echo -e "  ${GREEN}✓${NC} ${message}"
+        else
+            echo -e "  ${RED}✗${NC} ${message}"
+        fi
+    fi
+}
+
+# ─── Open URL helper ─────────────────────────────────────────────────────────
+
+open_url() {
+    local url="$1"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        open "$url" 2>/dev/null && return 0
+    elif command -v xdg-open &>/dev/null; then
+        xdg-open "$url" 2>/dev/null && return 0
+    elif command -v wslview &>/dev/null; then
+        wslview "$url" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
 # ─── Ensure Doppler CLI is installed ──────────────────────────────────────────
 
 echo ""
@@ -394,8 +446,15 @@ install_doppler() {
     if [[ "$(uname)" == "Darwin" ]]; then
         # macOS — prefer Homebrew
         if command -v brew &>/dev/null; then
-            echo -e "  ${DIM}Installing via Homebrew...${NC}"
-            brew install dopplerhq/cli/doppler 2>&1 | while IFS= read -r line; do echo -e "  ${DIM}${line}${NC}"; done
+            start_spinner "Installing Doppler via Homebrew (this may take a minute)..."
+            brew install dopplerhq/cli/doppler >/dev/null 2>&1
+            local exit_code=$?
+            if [[ $exit_code -eq 0 ]]; then
+                stop_spinner 1 "Doppler installed via Homebrew"
+            else
+                stop_spinner 0 "Homebrew install failed"
+                return 1
+            fi
         else
             echo -e "${RED}Error: Homebrew not found. Install Doppler manually:${NC}"
             echo -e "  ${CYAN}https://docs.doppler.com/docs/install-cli${NC}"
@@ -403,7 +462,7 @@ install_doppler() {
         fi
     elif [[ -f /etc/debian_version ]] || command -v apt-get &>/dev/null; then
         # Debian/Ubuntu
-        echo -e "  ${DIM}Installing via apt (Debian/Ubuntu)...${NC}"
+        start_spinner "Installing Doppler via apt (this may take a minute)..."
         (
             curl -sLf --retry 3 --tlsv1.2 --proto "=https" \
                 'https://packages.doppler.com/public/cli/gpg.DE2A7741A397C129.key' \
@@ -412,14 +471,18 @@ install_doppler() {
                 | sudo tee /etc/apt/sources.list.d/doppler-cli.list >/dev/null
             sudo apt-get update -qq >/dev/null 2>&1
             sudo apt-get install -y -qq doppler >/dev/null 2>&1
-        ) && echo -e "  ${GREEN}✓${NC} Doppler installed via apt" || {
-            echo -e "${RED}Error: apt install failed. Install Doppler manually:${NC}"
-            echo -e "  ${CYAN}https://docs.doppler.com/docs/install-cli${NC}"
+        )
+        local exit_code=$?
+        if [[ $exit_code -eq 0 ]]; then
+            stop_spinner 1 "Doppler installed via apt"
+        else
+            stop_spinner 0 "apt install failed"
+            echo -e "  ${DIM}Install manually: ${CYAN}https://docs.doppler.com/docs/install-cli${NC}"
             return 1
-        }
+        fi
     elif command -v yum &>/dev/null || command -v dnf &>/dev/null; then
         # RHEL/Fedora/CentOS
-        echo -e "  ${DIM}Installing via rpm (RHEL/Fedora)...${NC}"
+        start_spinner "Installing Doppler via rpm (this may take a minute)..."
         (
             sudo rpm --import 'https://packages.doppler.com/public/cli/gpg.DE2A7741A397C129.key' 2>/dev/null
             curl -sLf --retry 3 --tlsv1.2 --proto "=https" \
@@ -430,21 +493,27 @@ install_doppler() {
             else
                 sudo yum install -y -q doppler >/dev/null 2>&1
             fi
-        ) && echo -e "  ${GREEN}✓${NC} Doppler installed via rpm" || {
-            echo -e "${RED}Error: rpm install failed. Install Doppler manually:${NC}"
-            echo -e "  ${CYAN}https://docs.doppler.com/docs/install-cli${NC}"
+        )
+        local exit_code=$?
+        if [[ $exit_code -eq 0 ]]; then
+            stop_spinner 1 "Doppler installed via rpm"
+        else
+            stop_spinner 0 "rpm install failed"
+            echo -e "  ${DIM}Install manually: ${CYAN}https://docs.doppler.com/docs/install-cli${NC}"
             return 1
-        }
+        fi
     else
         # Generic fallback — Doppler's install script
-        echo -e "  ${DIM}Installing via Doppler install script...${NC}"
-        (curl -sLf --retry 3 --tlsv1.2 --proto "=https" https://cli.doppler.com/install.sh | sh) 2>&1 \
-            | while IFS= read -r line; do echo -e "  ${DIM}${line}${NC}"; done \
-            && echo -e "  ${GREEN}✓${NC} Doppler installed" || {
-                echo -e "${RED}Error: Automatic install failed. Install Doppler manually:${NC}"
-                echo -e "  ${CYAN}https://docs.doppler.com/docs/install-cli${NC}"
-                return 1
-            }
+        start_spinner "Installing Doppler (this may take a minute)..."
+        (curl -sLf --retry 3 --tlsv1.2 --proto "=https" https://cli.doppler.com/install.sh | sh) >/dev/null 2>&1
+        local exit_code=$?
+        if [[ $exit_code -eq 0 ]]; then
+            stop_spinner 1 "Doppler installed"
+        else
+            stop_spinner 0 "Automatic install failed"
+            echo -e "  ${DIM}Install manually: ${CYAN}https://docs.doppler.com/docs/install-cli${NC}"
+            return 1
+        fi
     fi
 }
 
@@ -475,18 +544,50 @@ if [[ "${DOPPLER_SKIP_AUTH:-}" != "1" ]] && command -v doppler &>/dev/null; then
 
         if [[ "$do_login" == "y" || "$do_login" == "Y" || "$do_login" == "yes" ]]; then
             echo ""
-            echo -e "  ${CYAN}Opening Doppler login...${NC}"
-            echo -e "  ${DIM}(If a browser doesn't open, copy the URL shown below)${NC}"
-            echo ""
 
-            # doppler login reads from the terminal itself, so this works in curl|bash
-            if doppler login < /dev/tty 2>&1; then
+            # Capture the auth URL from doppler login and try to auto-open it
+            # doppler login --no-prompt outputs the URL without waiting for browser interaction
+            local auth_url=""
+            auth_url=$(doppler login --no-prompt 2>&1 | grep -oE 'https://[^ ]+' | head -1) || true
+
+            if [[ -n "$auth_url" ]]; then
+                if open_url "$auth_url"; then
+                    echo -e "  ${GREEN}✓${NC} Opened Doppler login in your browser"
+                else
+                    echo -e "  ${CYAN}Open this URL in your browser to authenticate:${NC}"
+                    echo ""
+                    echo -e "    ${BOLD}${auth_url}${NC}"
+                fi
                 echo ""
-                echo -e "  ${GREEN}✓${NC} Doppler authenticated successfully"
+                echo -e "  ${DIM}Waiting for authentication to complete...${NC}"
+
+                # Poll until authenticated (timeout after 120 seconds)
+                local waited=0
+                start_spinner "Waiting for you to complete login in the browser..."
+                while [[ $waited -lt 120 ]]; do
+                    if doppler me &>/dev/null 2>&1; then
+                        stop_spinner 1 "Doppler authenticated successfully"
+                        break
+                    fi
+                    sleep 3
+                    waited=$((waited + 3))
+                done
+                if [[ $waited -ge 120 ]]; then
+                    stop_spinner 0 "Timed out waiting for login"
+                    echo -e "  ${DIM}You can finish later: ${CYAN}doppler login${NC}"
+                fi
             else
+                # Fallback: run doppler login interactively
+                echo -e "  ${CYAN}Running Doppler login...${NC}"
                 echo ""
-                echo -e "  ${YELLOW}Login didn't complete. You can finish later:${NC}"
-                echo -e "    ${CYAN}doppler login${NC}"
+                if doppler login < /dev/tty 2>&1; then
+                    echo ""
+                    echo -e "  ${GREEN}✓${NC} Doppler authenticated successfully"
+                else
+                    echo ""
+                    echo -e "  ${YELLOW}Login didn't complete. You can finish later:${NC}"
+                    echo -e "    ${CYAN}doppler login${NC}"
+                fi
             fi
         else
             echo ""

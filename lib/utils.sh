@@ -153,7 +153,8 @@ parse_env_to_sorted_file() {
         touch "$output"
         return
     fi
-    grep -v '^\s*#' "$input" | grep -v '^\s*$' | while IFS= read -r line; do
+    # grep returns exit 1 when no lines match — tolerate empty/comment-only files
+    (grep -v '^\s*#' "$input" || true) | (grep -v '^\s*$' || true) | while IFS= read -r line; do
         local key="${line%%=*}"
         local value="${line#*=}"
         value="${value#\"}"
