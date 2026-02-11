@@ -161,6 +161,37 @@ If automatic install fails (permissions, unsupported OS), install manually: http
 
 Run `doppler login` to authenticate. This is a one-time setup per machine. The installer will offer to do this for you if you run it again.
 
+## Matrx Ship — Version Tracking
+
+This repo uses [matrx-ship](https://github.com/armanisadeghi/matrx-ship) for deployment and version tracking. Since this is a bash project (no `package.json`), all ship commands use the bash wrapper.
+
+### Install (already done for this repo)
+
+```bash
+curl -sL https://raw.githubusercontent.com/armanisadeghi/matrx-ship/main/cli/install.sh | bash
+```
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `bash scripts/matrx/ship.sh "message"` | Ship a patch version (commit + push + track) |
+| `bash scripts/matrx/ship.sh --minor "message"` | Ship a minor version |
+| `bash scripts/matrx/ship.sh --major "message"` | Ship a major version |
+| `bash scripts/matrx/ship.sh status` | Show current version from server |
+| `bash scripts/matrx/ship.sh history` | Import full git history into dashboard |
+| `bash scripts/matrx/ship.sh history --dry` | Preview what would be imported |
+| `bash scripts/matrx/ship.sh update` | Update the ship CLI to latest |
+| `bash scripts/matrx/ship.sh help` | Show all options |
+
+### Admin Dashboard
+
+https://ship-matrx-dev-tools.dev.codematrx.com/admin
+
+### Note for Node projects
+
+In projects with `package.json`, the installer registers `pnpm ship:*` scripts instead. For example, `pnpm ship "message"`, `pnpm ship:minor "message"`, `pnpm ship:history`, etc.
+
 ## Adding New Tools
 
 1. Create `tools/my-tool.sh` in this repo
