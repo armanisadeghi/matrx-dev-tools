@@ -259,7 +259,7 @@ curl -sL https://raw.githubusercontent.com/armanisadeghi/matrx-ship/main/cli/ins
 
 ### Admin Dashboard
 
-https://ship-matrx-dev-tools.dev.codematrx.com/admin
+https://matrx-dev-tools.dev.codematrx.com/admin
 
 ### Note for Node projects
 
